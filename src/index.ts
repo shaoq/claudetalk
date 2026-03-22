@@ -25,6 +25,7 @@ function log(msg: string) {
 
 // ========== 会话持久化 ==========
 // 将 session 映射持久化到文件，重启后可恢复多轮对话
+// key 格式: conversationId + '|' + workDir（区分不同工作目录的 session）
 const SESSION_DIR = join(homedir(), '.claudetalk')
 const SESSION_FILE = join(SESSION_DIR, 'sessions.json')
 
@@ -56,8 +57,14 @@ function saveSessionMap(): void {
   }
 }
 
-// 每个 conversationId 维护一个 Claude Code session_id，实现多轮对话
+// 每个 conversationId + workDir 维护一个 Claude Code session_id，实现多轮对话
+// 不同工作目录的 session 不会互相干扰
 const sessionMap = loadSessionMap()
+
+// 生成 session key（包含工作目录）
+function getSessionKey(conversationId: string, workDir: string): string {
+  return `${conversationId}|${workDir}`
+}
 
 interface ClaudeResponse {
   type: string
@@ -74,7 +81,8 @@ interface ClaudeResponse {
  * 如果有已存在的 session_id，则用 --resume 继续会话
  */
 async function callClaude(message: string, conversationId: string, workDir: string): Promise<string> {
-  const existingSessionId = sessionMap.get(conversationId)
+  const sessionKey = getSessionKey(conversationId, workDir)
+  const existingSessionId = sessionMap.get(sessionKey)
 
   const args = ['-p', '--output-format', 'json', '--dangerously-skip-permissions']
   if (existingSessionId) {
@@ -113,6 +121,15 @@ async function callClaude(message: string, conversationId: string, workDir: stri
       }
 
       if (code !== 0) {
+        // 检测 session 无效错误，自动降级为新建会话
+        if (stderr.includes('No conversation found') || stderr.includes('session ID')) {
+          log(`[claude] Session ${existingSessionId} is invalid, clearing and retrying without resume`)
+          sessionMap.delete(sessionKey)
+          saveSessionMap()
+          // 递归调用，这次不传 session_id
+          callClaude(message, conversationId, workDir).then(resolve).catch(reject)
+          return
+        }
         reject(new Error(`claude exited with code ${code}: ${stderr}`))
         return
       }
@@ -132,9 +149,9 @@ async function callClaude(message: string, conversationId: string, workDir: stri
 
         // 保存 session_id 用于后续多轮对话，并持久化到文件
         if (response.session_id) {
-          sessionMap.set(conversationId, response.session_id)
+          sessionMap.set(sessionKey, response.session_id)
           saveSessionMap()
-          log(`[claude] Saved session_id=${response.session_id} for conversationId=${conversationId}`)
+          log(`[claude] Saved session_id=${response.session_id} for sessionKey=${sessionKey}`)
         }
 
         if (response.is_error) {
@@ -189,11 +206,12 @@ export async function startBot(options: StartBotOptions): Promise<void> {
     // ========== 内置指令处理 ==========
     const command = messageText.toLowerCase()
     if (command === '新会话' || command === '清空记忆' || command === '/new' || command === '/reset') {
-      const hadSession = sessionMap.has(chatId)
+      const sessionKey = getSessionKey(chatId, options.workDir)
+      const hadSession = sessionMap.has(sessionKey)
       if (hadSession) {
-        sessionMap.delete(chatId)
+        sessionMap.delete(sessionKey)
         saveSessionMap()
-        log(`[command] Cleared session for chatId=${chatId}`)
+        log(`[command] Cleared session for sessionKey=${sessionKey}`)
       }
       const replyContent = hadSession
         ? '🔄 已清空当前会话记忆，下次发消息将开启全新对话。'
