@@ -76,6 +76,22 @@ cd /path/to/your/project
 claudetalk
 ```
 
+#### 切换工作目录
+
+Claude Code 的 session 与工作目录绑定，不同目录的 session 不会互相干扰。
+
+**使用场景**：
+
+- 在项目 A 下启动 claudetalk，与 Claude Code 讨论项目 A 的代码
+- 切换到项目 B，重新启动 claudetalk，会开启新的会话（不会记住项目 A 的对话）
+- 切换回项目 A，重新启动 claudetalk，会恢复项目 A 的会话记忆
+
+**注意事项**：
+
+- 每次切换工作目录后，必须**重新启动 claudetalk**
+- 同一个钉钉会话在不同工作目录下会有独立的 session，互不干扰
+- Session 会自动持久化到 `~/.claudetalk/sessions.json`，重启后自动恢复
+
 
 ### 聊天指令
 
