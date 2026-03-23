@@ -29,15 +29,49 @@ function log(msg: string) {
 const SESSION_DIR = join(homedir(), '.claudetalk')
 const SESSION_FILE = join(SESSION_DIR, 'sessions.json')
 
-function loadSessionMap(): Map<string, string> {
+// session value 结构（兼容旧格式的纯字符串）
+interface SessionEntry {
+  sessionId: string
+  lastActiveAt: number  // 时间戳，用于找最近活跃会话
+  isGroup: boolean      // 是否群聊，发通知时需要
+  conversationId: string
+  userId: string        // 私聊时的发送者 userId，用于主动发消息
+}
+
+/**
+ * 将旧格式（纯字符串 sessionId）或新格式统一解析为 SessionEntry
+ */
+function parseSessionEntry(value: unknown, key: string): SessionEntry | null {
+  if (typeof value === 'string') {
+    // 兼容旧格式：value 是纯 sessionId 字符串
+    const conversationId = key.split('|')[0] || ''
+    return { sessionId: value, lastActiveAt: 0, isGroup: false, conversationId, userId: '' }
+  }
+  if (value && typeof value === 'object' && 'sessionId' in value) {
+    const entry = value as SessionEntry
+    // 兼容没有 userId 字段的旧新格式
+    if (!entry.userId) entry.userId = ''
+    return entry
+  }
+  return null
+}
+
+function loadSessionMap(): Map<string, SessionEntry> {
   if (!existsSync(SESSION_FILE)) {
     return new Map()
   }
   try {
     const content = readFileSync(SESSION_FILE, 'utf-8')
-    const entries = JSON.parse(content) as Record<string, string>
-    log(`[session] Loaded ${Object.keys(entries).length} sessions from ${SESSION_FILE}`)
-    return new Map(Object.entries(entries))
+    const raw = JSON.parse(content) as Record<string, unknown>
+    const entries = new Map<string, SessionEntry>()
+    for (const [key, value] of Object.entries(raw)) {
+      const entry = parseSessionEntry(value, key)
+      if (entry) {
+        entries.set(key, entry)
+      }
+    }
+    log(`[session] Loaded ${entries.size} sessions from ${SESSION_FILE}`)
+    return entries
   } catch (error) {
     log(`[session] Failed to load sessions: ${error}`)
     return new Map()
@@ -66,6 +100,20 @@ function getSessionKey(conversationId: string, workDir: string): string {
   return `${conversationId}|${workDir}`
 }
 
+/**
+ * 找当前 workDir 下最近活跃的会话，用于连接成功后发上线通知
+ */
+function findLastActiveSession(workDir: string): SessionEntry | null {
+  let latestEntry: SessionEntry | null = null
+  for (const [key, entry] of sessionMap) {
+    if (!key.endsWith(`|${workDir}`)) continue
+    if (!latestEntry || entry.lastActiveAt > latestEntry.lastActiveAt) {
+      latestEntry = entry
+    }
+  }
+  return latestEntry
+}
+
 interface ClaudeResponse {
   type: string
   subtype: string
@@ -80,9 +128,10 @@ interface ClaudeResponse {
  * 调用 claude -p CLI 处理消息
  * 如果有已存在的 session_id，则用 --resume 继续会话
  */
-async function callClaude(message: string, conversationId: string, workDir: string): Promise<string> {
+async function callClaude(message: string, conversationId: string, workDir: string, isGroup: boolean = false, userId: string = ''): Promise<string> {
   const sessionKey = getSessionKey(conversationId, workDir)
-  const existingSessionId = sessionMap.get(sessionKey)
+  const existingEntry = sessionMap.get(sessionKey)
+  const existingSessionId = existingEntry?.sessionId
 
   const args = ['-p', '--output-format', 'json', '--dangerously-skip-permissions']
   if (existingSessionId) {
@@ -137,7 +186,7 @@ async function callClaude(message: string, conversationId: string, workDir: stri
           log(`[claude] [ERROR_TYPE: SESSION_INVALID] Session ${existingSessionId} is invalid, clearing and retrying without resume`)
           sessionMap.delete(sessionKey)
           saveSessionMap()
-          callClaude(message, conversationId, workDir).then(resolve).catch(reject)
+          callClaude(message, conversationId, workDir, isGroup, userId).then(resolve).catch(reject)
           return
         }
 
@@ -185,7 +234,13 @@ async function callClaude(message: string, conversationId: string, workDir: stri
 
         // 保存 session_id 用于后续多轮对话，并持久化到文件
         if (response.session_id) {
-          sessionMap.set(sessionKey, response.session_id)
+          sessionMap.set(sessionKey, {
+            sessionId: response.session_id,
+            lastActiveAt: Date.now(),
+            isGroup,
+            conversationId,
+            userId,
+          })
           saveSessionMap()
           log(`[claude] Saved session_id=${response.session_id} for sessionKey=${sessionKey}`)
         }
@@ -283,8 +338,10 @@ export async function startBot(options: StartBotOptions): Promise<void> {
     }
 
     try {
-      // 调用 Claude Code CLI 处理消息，传入工作目录
-      const replyText = await callClaude(messageText, chatId, options.workDir)
+      // 调用 Claude Code CLI 处理消息，传入工作目录和会话类型
+      // 使用 senderStaffId 作为私聊发消息的 userId（staffId 格式，非 senderId）
+      const staffId = callback.senderStaffId || ''
+      const replyText = await callClaude(messageText, chatId, options.workDir, isGroup, staffId)
       log(`[onMessage] Claude reply (first 200 chars): "${replyText.substring(0, 200)}"`)
 
       // 优先用 sessionWebhook 回复（最简单可靠）
@@ -330,4 +387,27 @@ export async function startBot(options: StartBotOptions): Promise<void> {
 
   await dingtalkClient.start()
   log('=== DingTalk Bot Running ===')
+
+  // 连接成功后，找当前 workDir 最近活跃的会话，发送上线通知
+  const lastActiveSession = findLastActiveSession(options.workDir)
+  if (lastActiveSession) {
+    const notifyText = [
+      '✅ **ClaudeTalk 已上线**',
+      '',
+      `📁 工作目录: \`${options.workDir}\``,
+    ].join('\n')
+
+    if (!lastActiveSession.isGroup && lastActiveSession.userId) {
+      // 仅对私聊发上线通知，使用 staffId 和纯文本格式
+      const notifyPlainText = `✅ ClaudeTalk 已上线\n📁 工作目录: ${options.workDir}`
+      log(`[notify] Sending online notification to staffId=${lastActiveSession.userId}`)
+      dingtalkClient.sendPrivateMessage(lastActiveSession.userId, notifyPlainText, 'sampleText')
+        .then((result) => log(`[notify] Online notification sent, response: ${JSON.stringify(result)}`))
+        .catch((error: Error) => log(`[notify] Failed to send online notification: ${error.message}`))
+    } else {
+      log('[notify] No private session found, skipping online notification')
+    }
+  } else {
+    log('[notify] No previous session found, skipping online notification')
+  }
 }
