@@ -15,6 +15,10 @@ export interface StartBotOptions {
   clientId: string
   clientSecret: string
   workDir: string
+  // 可选：角色名，用于隔离不同角色的 session（同一工作目录多角色互不干扰）
+  profile?: string
+  // 可选：角色描述，新建 session 时通过 --append-system-prompt 传给 Claude
+  systemPrompt?: string
 }
 
 // ========== 日志 ==========
@@ -95,9 +99,9 @@ function saveSessionMap(): void {
 // 不同工作目录的 session 不会互相干扰
 const sessionMap = loadSessionMap()
 
-// 生成 session key（包含工作目录）
-function getSessionKey(conversationId: string, workDir: string): string {
-  return `${conversationId}|${workDir}`
+// 生成 session key（包含工作目录和角色，不同角色的 session 互不干扰）
+function getSessionKey(conversationId: string, workDir: string, profile?: string): string {
+  return profile ? `${conversationId}|${workDir}|${profile}` : `${conversationId}|${workDir}`
 }
 
 /**
@@ -123,17 +127,29 @@ interface ClaudeResponse {
   duration_ms: number
   stop_reason: string
 }
-
 /**
  * 调用 claude -p CLI 处理消息
  * 如果有已存在的 session_id，则用 --resume 继续会话
+ * 新建 session 时，通过 --append-system-prompt 传入角色信息
  */
-async function callClaude(message: string, conversationId: string, workDir: string, isGroup: boolean = false, userId: string = ''): Promise<string> {
-  const sessionKey = getSessionKey(conversationId, workDir)
+async function callClaude(
+  message: string,
+  conversationId: string,
+  workDir: string,
+  isGroup: boolean = false,
+  userId: string = '',
+  profile?: string,
+  systemPrompt?: string
+): Promise<string> {
+  const sessionKey = getSessionKey(conversationId, workDir, profile)
   const existingEntry = sessionMap.get(sessionKey)
   const existingSessionId = existingEntry?.sessionId
 
   const args = ['-p', '--output-format', 'json', '--dangerously-skip-permissions']
+  // 新建 session 时传入角色信息；resume 时 Claude 已有上下文，不需要重复传
+  if (!existingSessionId && systemPrompt) {
+    args.push('--append-system-prompt', systemPrompt)
+  }
   if (existingSessionId) {
     args.push('--resume', existingSessionId)
   }
@@ -341,7 +357,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
       // 调用 Claude Code CLI 处理消息，传入工作目录和会话类型
       // 使用 senderStaffId 作为私聊发消息的 userId（staffId 格式，非 senderId）
       const staffId = callback.senderStaffId || ''
-      const replyText = await callClaude(messageText, chatId, options.workDir, isGroup, staffId)
+      const replyText = await callClaude(messageText, chatId, options.workDir, isGroup, staffId, options.profile, options.systemPrompt)
       log(`[onMessage] Claude reply (first 200 chars): "${replyText.substring(0, 200)}"`)
 
       // 优先用 sessionWebhook 回复（最简单可靠）

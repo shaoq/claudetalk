@@ -114,6 +114,12 @@ claudetalk --setup
 # 为当前工作目录配置专属机器人（覆盖全局配置）
 claudetalk --setup --local
 
+# 启动指定角色的机器人
+claudetalk --profile <角色名>
+
+# 为当前工作目录配置指定角色
+claudetalk --setup --local --profile <角色名>
+
 # 查看帮助
 claudetalk --help
 
@@ -135,6 +141,45 @@ claudetalk --setup --local
 这会在当前目录生成 `.claudetalk.json`，claudetalk 启动时会优先使用它，全局配置作为兜底。
 
 **配置优先级**：工作目录 `.claudetalk.json` > 全局 `~/.claudetalk/claudetalk.json` > 环境变量
+
+### 多角色配置
+
+在同一工作目录下，可以配置多个角色，每个角色对应一个独立的钉钉机器人，拥有独立的会话记忆和角色描述。
+
+**配置方式**：运行 `claudetalk --setup --local --profile <角色名>` 进行交互式配置，或直接编辑 `.claudetalk.json`：
+
+```json
+{
+  "DINGTALK_CLIENT_ID": "默认机器人 AppKey",
+  "DINGTALK_CLIENT_SECRET": "默认机器人 AppSecret",
+  "profiles": {
+    "pm": {
+      "DINGTALK_CLIENT_ID": "PM 机器人 AppKey",
+      "DINGTALK_CLIENT_SECRET": "PM 机器人 AppSecret",
+      "systemPrompt": "你是一个产品经理，擅长对业务需求进行拆解，形成完整的需求文档"
+    },
+    "dev": {
+      "DINGTALK_CLIENT_ID": "Dev 机器人 AppKey",
+      "DINGTALK_CLIENT_SECRET": "Dev 机器人 AppSecret",
+      "systemPrompt": "你是一个资深后端工程师，熟悉本项目的架构和规范"
+    }
+  }
+}
+```
+
+**启动不同角色**：
+
+```bash
+# 终端 1：启动 PM 角色机器人
+claudetalk --profile pm
+
+# 终端 2：启动 Dev 角色机器人
+claudetalk --profile dev
+```
+
+- 不同角色的会话完全隔离，互不干扰
+- 指定了不存在的角色时，会提示配置命令并退出
+- `systemPrompt` 会在新建会话时通过 `--append-system-prompt` 传给 Claude
 
 ### 上线通知
 
@@ -164,12 +209,33 @@ claudetalk
 | `claudetalk.json` | 钉钉凭据配置（AppKey / AppSecret） |
 | `sessions.json` | 会话 session 持久化（自动生成，重启后恢复多轮对话） |
 
-**凭据配置** `~/.claudetalk/claudetalk.json`：
+**默认配置** `~/.claudetalk/claudetalk.json` 或工作目录 `.claudetalk.json`：
 
 ```json
 {
   "DINGTALK_CLIENT_ID": "your_app_key",
   "DINGTALK_CLIENT_SECRET": "your_app_secret"
+}
+```
+
+**多角色配置**（工作目录 `.claudetalk.json`）：
+
+```json
+{
+  "DINGTALK_CLIENT_ID": "默认机器人 AppKey",
+  "DINGTALK_CLIENT_SECRET": "默认机器人 AppSecret",
+  "profiles": {
+    "pm": {
+      "DINGTALK_CLIENT_ID": "PM 机器人 AppKey",
+      "DINGTALK_CLIENT_SECRET": "PM 机器人 AppSecret",
+      "systemPrompt": "你是一个产品经理，擅长对业务需求进行拆解，形成完整的需求文档"
+    },
+    "dev": {
+      "DINGTALK_CLIENT_ID": "Dev 机器人 AppKey",
+      "DINGTALK_CLIENT_SECRET": "Dev 机器人 AppSecret",
+      "systemPrompt": "你是一个资深后端工程师，熟悉本项目的架构和规范"
+    }
+  }
 }
 ```
 
