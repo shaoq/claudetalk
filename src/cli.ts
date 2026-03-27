@@ -258,84 +258,34 @@ async function interactiveSetup(saveToLocal: boolean, workDir: string, profile?:
   let subagentPermissions: any | undefined
   
   if (enableSubagent) {
-    const modelInput = await promptInput('  模型 (默认: claude-sonnet-4-6): ')
-    subagentModel = modelInput || 'claude-sonnet-4-6'
-    
-    // 引导用户配置权限
-    const configPermissionsInput = await promptInput('  是否自定义权限？(y/N): ')
-    if (configPermissionsInput.toLowerCase() === 'y') {
-      console.log('')
-      console.log('   请选择权限模板：')
-      console.log('   1. 开发者（全权限）- 可读写代码、运行测试、构建、发布')
-      console.log('   2. 开发者（限制发布）- 可读写代码、运行测试、构建，但禁止发布')
-      console.log('   3. 只读（代码审查）- 只能读取代码，禁止任何修改和运行命令')
-      console.log('   4. 文档编写者 - 只能修改文档文件，禁止修改源代码')
-      console.log('   5. 自定义（手动输入）')
-      
-      const templateChoice = await promptInput('   请输入选项 (1-5, 默认 2): ')
-      const choice = templateChoice || '2'
-      
-      switch (choice) {
-        case '1':
-          subagentPermissions = {
-            allow: ['Read(./**)', 'Edit(./**)', 'Bash(*)'],
-            deny: []
-          }
-          break
-        case '2':
-          subagentPermissions = {
-            allow: ['Read(./**)', 'Edit(./**)', 'Bash(npm test)', 'Bash(npm run build)', 'Bash(npm run dev)'],
-            deny: ['Bash(npm publish)', 'Bash(rm -rf *)']
-          }
-          break
-        case '3':
-          subagentPermissions = {
-            allow: ['Read(./**)'],
-            deny: ['Edit(./**)', 'Bash(*)']
-          }
-          break
-        case '4':
-          subagentPermissions = {
-            allow: ['Read(./**)', 'Edit(./README.md)', 'Edit(./docs/**)', 'Edit(./**/*.md)'],
-            deny: ['Edit(./src/**)', 'Edit(./**/*.ts)', 'Edit(./**/*.js)', 'Edit(./**/*.tsx)', 'Edit(./**/*.jsx)', 'Bash(*)']
-          }
-          break
-        case '5':
-          console.log('   请输入允许的权限规则（每行一个，空行结束）：')
-          console.log('   示例: Read(./**), Edit(./src/**), Bash(npm test)')
-          const allowRules: string[] = []
-          while (true) {
-            const rule = await promptInput('   allow> ')
-            if (!rule) break
-            allowRules.push(rule)
-          }
-          console.log('   请输入禁止的权限规则（每行一个，空行结束）：')
-          console.log('   示例: Bash(rm -rf *), Bash(npm publish)')
-          const denyRules: string[] = []
-          while (true) {
-            const rule = await promptInput('   deny> ')
-            if (!rule) break
-            denyRules.push(rule)
-          }
-          subagentPermissions = {
-            allow: allowRules.length > 0 ? allowRules : undefined,
-            deny: denyRules.length > 0 ? denyRules : undefined
-          }
-          break
-        default:
-          console.log('   ⚠️ 无效选项，使用默认权限（开发者限制发布）')
-          subagentPermissions = {
-            allow: ['Read(./**)', 'Edit(./**)', 'Bash(npm test)', 'Bash(npm run build)'],
-            deny: ['Bash(npm publish)', 'Bash(rm -rf *)']
-          }
+    console.log('')
+    console.log('  📦 模型选择（直接回车使用 Claude Code 默认模型）：')
+    console.log('     1. claude-opus-4-5    - 最强推理，适合复杂任务（较慢，费用高）')
+    console.log('     2. claude-sonnet-4-5  - 均衡性能，适合日常开发（推荐）')
+    console.log('     3. claude-haiku-4-5   - 速度最快，适合简单问答（费用低）')
+    console.log('     4. 手动输入模型名称')
+    const modelChoice = await promptInput('  请输入选项 (1-4，直接回车使用默认): ')
+    switch (modelChoice.trim()) {
+      case '1':
+        subagentModel = 'claude-opus-4-5'
+        break
+      case '2':
+        subagentModel = 'claude-sonnet-4-5'
+        break
+      case '3':
+        subagentModel = 'claude-haiku-4-5'
+        break
+      case '4': {
+        const customModel = await promptInput('  请输入模型名称: ')
+        subagentModel = customModel.trim() || undefined
+        break
       }
-    } else {
-      // 使用默认权限（开发者限制发布）
-      subagentPermissions = {
-        allow: ['Read(./**)', 'Edit(./**)', 'Bash(npm test)', 'Bash(npm run build)'],
-        deny: ['Bash(npm publish)', 'Bash(rm -rf *)']
-      }
+      default:
+        // 直接回车：不设置 subagentModel，Claude Code 使用其自身默认模型
+        subagentModel = undefined
     }
+
+    // 权限默认全部允许，用户可在生成的 SubAgent 文件中手动调整
   }
 
   if (profile) {
@@ -403,37 +353,20 @@ async function createSubagentFile(
     yamlFrontmatter.push(`model: "${model}"`)
   }
   
-  if (permissions) {
-    yamlFrontmatter.push('permissions:')
-    // 处理权限配置
-    if (permissions.allow && permissions.allow.length > 0) {
-      yamlFrontmatter.push('  allow:')
-      permissions.allow.forEach((rule: string) => {
-        yamlFrontmatter.push(`    - "${rule}"`)
-      })
-    }
-    if (permissions.deny && permissions.deny.length > 0) {
-      yamlFrontmatter.push('  deny:')
-      permissions.deny.forEach((rule: string) => {
-        yamlFrontmatter.push(`    - "${rule}"`)
-      })
-    }
-  } else {
-    // 默认权限
-    yamlFrontmatter.push('permissions:')
-    yamlFrontmatter.push('  allow:')
-    yamlFrontmatter.push('    - "Read(./**)"')
-    yamlFrontmatter.push('    - "Edit(./**)"')
-    yamlFrontmatter.push('    - "Bash(npm test)"')
-    yamlFrontmatter.push('    - "Bash(npm run build)"')
-    yamlFrontmatter.push('  deny:')
-    yamlFrontmatter.push('    - "Bash(rm -rf *)"')
-    yamlFrontmatter.push('    - "Bash(npm publish)"')
-  }
-  
+  // 权限默认全部允许（不设置 permissions 字段），如需限制可手动编辑此文件
+  // 示例：
+  //   permissions:
+  //     allow:
+  //       - "Read(./**)"
+  //       - "Edit(./src/**)"
+  //       - "Bash(npm test)"
+  //     deny:
+  //       - "Bash(rm -rf *)"
+  //       - "Bash(npm publish)"
+
   yamlFrontmatter.push('---')
   yamlFrontmatter.push('')
-  
+
   // 添加系统提示词
   if (systemPrompt) {
     yamlFrontmatter.push(systemPrompt)
