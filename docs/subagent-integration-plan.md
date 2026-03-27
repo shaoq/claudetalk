@@ -411,9 +411,9 @@ await startBot({
 
 | 场景 | profile | subagentEnabled | 调用方式 | 说明 |
 |------|---------|-----------------|----------|------|
-| 默认机器人 | 无 | - | 自动委托 | 不指定 `--agent`，Claude Code 自动选择 |
-| 角色 + SubAgent | 有 | true | 显式调用 | 使用 `--agent <profile-name>` |
-| 角色 + 传统方式 | 有 | false | systemPrompt | 使用 `--append-system-prompt` |
+| 默认机器人 | 无 | - | 自动委托 | 不传额外参数，Claude Code 自动选择 SubAgent |
+| 角色 + SubAgent | 有 | true | `--agents <JSON>` | 将 profile 配置内联为 SubAgent 定义传给 Claude Code |
+| 角色 + 传统方式 | 有 | false | `--append-system-prompt` | 使用传统 systemPrompt 方式 |
 
 ## 用户体验流程
 

@@ -210,6 +210,53 @@ claudetalk --profile dev
 
 
 
+### SubAgent 精细化角色控制
+
+> 这是 Claude Code 的原生 SubAgent 机制，适合需要**精细权限控制**或**指定模型**的场景。普通使用无需关注，用 `systemPrompt` 即可满足大多数需求。
+
+在配置角色时，可以选择启用 SubAgent 模式。启用后，ClaudeTalk 会将角色配置通过 Claude Code 的 `--agents` 参数传入，Claude Code 会自动委托给对应的 SubAgent 处理消息。
+
+**SubAgent 相比 systemPrompt 的优势**：
+- 独立的上下文窗口，不占用主会话 token
+- 可以为不同角色指定不同模型（如 PM 用 Haiku 节省成本，Dev 用 Sonnet 保证质量）
+- 可以精细控制每个角色的工具权限（如 PM 只读，Dev 可写）
+
+**启用方式**：运行 `claudetalk --setup --local --profile <角色名>` 时，在 SubAgent 配置引导中选择 `Y` 即可：
+
+```
+🤖 SubAgent 配置（推荐）
+   SubAgent 是 Claude Code 的原生角色机制，可以提供更精细的权限控制和模型选择。
+   如果不配置，将使用传统的 systemPrompt 方式。
+是否配置 SubAgent？(Y/n): Y
+  模型 (默认: claude-sonnet-4-6): claude-haiku-4-5
+  是否自定义权限？(y/N): N
+
+✅ 角色 [pm] 配置已保存到 ./.claudetalk.json
+✅ SubAgent 文件已创建: ./.claude/agents/pm.md
+```
+
+配置后，`.claudetalk.json` 中会增加 SubAgent 相关字段：
+
+```json
+{
+  "profiles": {
+    "pm": {
+      "DINGTALK_CLIENT_ID": "PM 机器人 AppKey",
+      "DINGTALK_CLIENT_SECRET": "PM 机器人 AppSecret",
+      "systemPrompt": "你是产品经理，负责需求分析和文档编写",
+      "subagentEnabled": true,
+      "subagentModel": "claude-haiku-4-5",
+      "subagentPermissions": {
+        "allow": ["Read(./**)"],
+        "deny": ["Edit(./src/**)"]
+      }
+    }
+  }
+}
+```
+
+**配置变化自动生效**：修改配置后，下一条消息会自动检测到变化并重建会话，无需手动重启。
+
 ### 上线通知
 
 每次重启 claudetalk 后，会自动向**最近活跃的私聊会话**发送一条上线通知：
