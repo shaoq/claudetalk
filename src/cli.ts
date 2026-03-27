@@ -23,12 +23,25 @@ interface ProfileConfig {
   DINGTALK_CLIENT_ID?: string
   DINGTALK_CLIENT_SECRET?: string
   systemPrompt?: string
+  subagentEnabled?: boolean
+  subagentModel?: string
+  subagentPermissions?: {
+    allow?: string[]
+    deny?: string[]
+  }
 }
 
 interface ClaudeTalkConfig {
   DINGTALK_CLIENT_ID: string
   DINGTALK_CLIENT_SECRET: string
   systemPrompt?: string
+  // SubAgent 相关配置（合并后的顶层字段）
+  subagentEnabled?: boolean
+  subagentModel?: string
+  subagentPermissions?: {
+    allow?: string[]
+    deny?: string[]
+  }
   // 多角色配置：key 为角色名，value 为该角色的配置（会覆盖顶层字段）
   profiles?: Record<string, ProfileConfig>
 }
@@ -295,7 +308,6 @@ async function interactiveSetup(saveToLocal: boolean, workDir: string, profile?:
       // 将 subAgent 配置保存到 profile 中
       profileConfig.subagentEnabled = true
       if (subagentModel) profileConfig.subagentModel = subagentModel
-      if (subagentPermissions) profileConfig.subagentPermissions = subagentPermissions
     }
     saveProfileToFile(profile, profileConfig, targetFile, targetDir)
     
