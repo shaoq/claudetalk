@@ -1,6 +1,20 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(openspec new:*)",
+      "Bash(openspec status:*)",
+      "Bash(openspec instructions:*)",
+      "Bash(npm link:*)",
+      "mcp__web-reader__webReader",
+      "Bash(npx tsx:*)",
+      "Bash(openspec list:*)",
+      "Bash(for change:*)",
+      "Bash(do echo:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "dingtalk"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

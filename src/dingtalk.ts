@@ -8,12 +8,18 @@ import type {
   DingTalkSendResponse,
   AICardInstance,
   AICardCreateRequest,
+  AICardCreateResponse,
+  AICardDeliverResult,
+  CardDeliveryContext,
   AICardStreamingRequest,
+  AICardStreamingResponse,
   DingTalkInboundCallback,
-} from './types.js';
+} from "./types.js";
 
-const DINGTALK_API_BASE = 'https://api.dingtalk.com';
-const DINGTALK_STREAM_URL = process.env.DINGTALK_STREAM_URL || 'wss://dingtalk-stream.dingtalk.com/connect';
+const DINGTALK_API_BASE = "https://api.dingtalk.com";
+const DINGTALK_STREAM_URL =
+  process.env.DINGTALK_STREAM_URL ||
+  "wss://dingtalk-stream.dingtalk.com/connect";
 
 // 钉钉 Stream 连接票据响应
 interface DingTalkStreamTicketResponse {
@@ -38,6 +44,79 @@ interface DingTalkStreamFrame {
 
 // 消息到达时的回调函数类型
 type MessageHandler = (callback: DingTalkInboundCallback) => Promise<void>;
+
+function getDingTalkBusinessError(data: {
+  errcode?: number;
+  errmsg?: string;
+  message?: string;
+  success?: boolean;
+}): string | null {
+  if (data.errcode !== undefined && data.errcode !== 0) {
+    return data.errmsg || data.message || `errcode=${data.errcode}`;
+  }
+  if (data.success === false) {
+    return data.errmsg || data.message || "remote success flag is false";
+  }
+  return null;
+}
+
+function getCardDeliverFailure(
+  deliverResults: AICardDeliverResult[],
+): string | null {
+  if (!deliverResults.length) {
+    return "delivery results are empty";
+  }
+
+  const successful = deliverResults.find((result) => result.success);
+  if (successful) {
+    return null;
+  }
+
+  const firstFailure = deliverResults.find((result) => result.errorMsg);
+  return firstFailure?.errorMsg || "all delivery results failed";
+}
+
+function buildCardParamMap(
+  templateKey: string,
+  content: string,
+  flowStatus: string,
+): Record<string, string> {
+  return {
+    [templateKey]: content,
+    flowStatus,
+  };
+}
+
+function headersToObject(headers: Headers): Record<string, string> {
+  return Object.fromEntries(headers.entries());
+}
+
+function stringifyForLog(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return `{"logError":"${error instanceof Error ? error.message : String(error)}"}`;
+  }
+}
+
+function resolvePrivateCardTarget(context: CardDeliveryContext): {
+  targetUserId: string;
+  userIdType: number;
+} {
+  const targetUserId = context.senderStaffId || context.senderId;
+  if (!targetUserId) {
+    throw new Error(
+      "Cannot create AI card for private chat: senderStaffId or senderId is required but missing from callback",
+    );
+  }
+
+  // 1 表示按 userId 语义投递。这里优先使用 staffId，缺失时回退到 senderId，
+  // 兼容当前回调和参考实现的目标标识差异。
+  return {
+    targetUserId,
+    userIdType: 1,
+  };
+}
 
 /**
  * 钉钉 API 客户端
@@ -74,16 +153,19 @@ export class DingTalkClient {
     const response = await fetch(
       `${DINGTALK_API_BASE}/v1.0/oauth2/accessToken`,
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           appKey: this.config.clientId,
           appSecret: this.config.clientSecret,
         }),
-      }
+      },
     );
 
-    const data = (await response.json()) as DingTalkTokenResponse & { code?: string; message?: string };
+    const data = (await response.json()) as DingTalkTokenResponse & {
+      code?: string;
+      message?: string;
+    };
 
     // 钉钉 v1.0 token 接口失败时返回 { code, message }，成功时返回 { accessToken, expireIn }
     if (!data.accessToken) {
@@ -104,47 +186,58 @@ export class DingTalkClient {
    * 获取 Stream 连接票据
    */
   private async getStreamTicket(): Promise<DingTalkStreamTicketResponse> {
-    console.error('[getStreamTicket] Fetching access token...');
+    console.error("[getStreamTicket] Fetching access token...");
     const accessToken = await this.getAccessToken();
-    console.error('[getStreamTicket] Access token obtained');
+    console.error("[getStreamTicket] Access token obtained");
 
     const requestBody = {
       clientId: this.config.clientId,
       clientSecret: this.config.clientSecret,
       subscriptions: [
         {
-          type: 'EVENT',
-          topic: '*',
+          type: "EVENT",
+          topic: "*",
         },
         {
-          type: 'CALLBACK',
-          topic: '/v1.0/im/bot/messages/get',
+          type: "CALLBACK",
+          topic: "/v1.0/im/bot/messages/get",
         },
       ],
-      ua: 'claude-code-dingtalk-channel/0.1.0',
+      ua: "claude-code-dingtalk-channel/0.1.0",
     };
 
-    console.error('[getStreamTicket] Requesting stream ticket...');
+    console.error("[getStreamTicket] Requesting stream ticket...");
     const response = await fetch(
       `${DINGTALK_API_BASE}/v1.0/gateway/connections/open`,
       {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'x-acs-dingtalk-access-token': accessToken,
+          "Content-Type": "application/json",
+          "x-acs-dingtalk-access-token": accessToken,
         },
         body: JSON.stringify(requestBody),
-      }
+      },
     );
 
-    const data = await response.json() as { endpoint: string; ticket: string; errcode?: number; errmsg?: string };
-    console.error('[getStreamTicket] Response:', { status: response.status, data });
+    const data = (await response.json()) as {
+      endpoint: string;
+      ticket: string;
+      errcode?: number;
+      errmsg?: string;
+    };
+    console.error("[getStreamTicket] Response:", {
+      status: response.status,
+      data,
+    });
 
     if (data.errcode && data.errcode !== 0) {
       throw new Error(`Failed to get stream ticket: ${data.errmsg}`);
     }
 
-    console.error('[getStreamTicket] Stream ticket obtained:', { endpoint: data.endpoint, ticket: data.ticket?.substring(0, 20) + '...' });
+    console.error("[getStreamTicket] Stream ticket obtained:", {
+      endpoint: data.endpoint,
+      ticket: data.ticket?.substring(0, 20) + "...",
+    });
     return { endpoint: data.endpoint, ticket: data.ticket };
   }
 
@@ -154,17 +247,17 @@ export class DingTalkClient {
   async start(): Promise<void> {
     if (!this.config.clientId || !this.config.clientSecret) {
       throw new Error(
-        'Missing required environment variables.\n' +
-        'Please set:\n' +
-        '  export DINGTALK_CLIENT_ID=your_app_key\n' +
-        '  export DINGTALK_CLIENT_SECRET=your_app_secret'
+        "Missing required environment variables.\n" +
+          "Please set:\n" +
+          "  export DINGTALK_CLIENT_ID=your_app_key\n" +
+          "  export DINGTALK_CLIENT_SECRET=your_app_secret",
       );
     }
-    console.error('Connecting to DingTalk Stream...');
+    console.error("Connecting to DingTalk Stream...");
 
     this.isManuallyClosed = false;
     this.reconnectDelayMs = 3000;
-    
+
     // 启动连接
     await this.connectStream();
   }
@@ -182,7 +275,7 @@ export class DingTalkClient {
       this.ws.close();
       this.ws = null;
     }
-    console.error('DingTalk Stream stopped');
+    console.error("DingTalk Stream stopped");
   }
 
   /**
@@ -199,7 +292,7 @@ export class DingTalkClient {
       this.ws = ws;
 
       ws.onopen = () => {
-        console.error('DingTalk Stream connected');
+        console.error("DingTalk Stream connected");
         // 重置重连延迟
         this.reconnectDelayMs = 3000;
         resolve();
@@ -222,14 +315,18 @@ export class DingTalkClient {
       };
 
       ws.onclose = (event) => {
-        console.error(`DingTalk Stream disconnected: code=${event.code}, reason=${event.reason}`);
+        console.error(
+          `DingTalk Stream disconnected: code=${event.code}, reason=${event.reason}`,
+        );
         this.ws = null;
 
         // 如果不是手动关闭，则自动重连
         // 重置退避延迟，避免之前退避到最大值后断线重连还要等很久
         if (!this.isManuallyClosed) {
           this.reconnectDelayMs = 3000;
-          console.error(`[ws.onclose] Scheduling reconnect in ${this.reconnectDelayMs}ms...`);
+          console.error(
+            `[ws.onclose] Scheduling reconnect in ${this.reconnectDelayMs}ms...`,
+          );
           this.reconnectTimer = setTimeout(() => {
             this.startReconnectLoop();
           }, this.reconnectDelayMs);
@@ -248,17 +345,23 @@ export class DingTalkClient {
         await this.connectStream();
         console.error(`[reconnect] Connected successfully`);
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         console.error(`[reconnect] Reconnect failed: ${errorMessage}`);
         console.error(`[reconnect] Error details:`, error);
-        
+
         // 指数退避，最大 60 秒
         this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 60000);
-        
+
         // 继续尝试重连
         if (!this.isManuallyClosed) {
-          console.error(`[reconnect] Will retry in ${this.reconnectDelayMs}ms...`);
-          this.reconnectTimer = setTimeout(attemptReconnect, this.reconnectDelayMs);
+          console.error(
+            `[reconnect] Will retry in ${this.reconnectDelayMs}ms...`,
+          );
+          this.reconnectTimer = setTimeout(
+            attemptReconnect,
+            this.reconnectDelayMs,
+          );
         }
       }
     };
@@ -269,33 +372,38 @@ export class DingTalkClient {
   /**
    * 处理 Stream 帧
    */
-  private async handleStreamFrame(ws: WebSocket, frame: DingTalkStreamFrame): Promise<void> {
+  private async handleStreamFrame(
+    ws: WebSocket,
+    frame: DingTalkStreamFrame,
+  ): Promise<void> {
     const { type, headers, data } = frame;
-    console.error(`[stream] frame: type=${type}, topic=${headers?.topic}, data=${data?.substring(0, 200)}`);
+    console.error(
+      `[stream] frame: type=${type}, topic=${headers?.topic}, data=${data?.substring(0, 200)}`,
+    );
 
     // 回复 ACK
     const ack = {
       code: 200,
       headers: {
-        contentType: 'application/json',
+        contentType: "application/json",
         messageId: headers.messageId,
         time: String(Date.now()),
       },
-      message: 'OK',
-      data: '',
+      message: "OK",
+      data: "",
     };
 
-    if (type === 'SYSTEM') {
+    if (type === "SYSTEM") {
       // 系统消息（心跳等）
-      if (headers.topic === 'ping') {
-        ws.send(JSON.stringify({ ...ack, data: 'pong' }));
+      if (headers.topic === "ping") {
+        ws.send(JSON.stringify({ ...ack, data: "pong" }));
       } else {
         ws.send(JSON.stringify(ack));
       }
       return;
     }
 
-    if (type === 'CALLBACK' && headers.topic === '/v1.0/im/bot/messages/get') {
+    if (type === "CALLBACK" && headers.topic === "/v1.0/im/bot/messages/get") {
       // 先立即回 ACK，避免阻塞 WebSocket 帧循环（Claude 处理消息可能需要数十秒）
       ws.send(JSON.stringify(ack));
 
@@ -318,40 +426,47 @@ export class DingTalkClient {
   /**
    * 处理收到的钉钉消息，转发给 Claude Code
    */
-  private async handleInboundMessage(callback: DingTalkInboundCallback): Promise<void> {
-    const isGroup = callback.conversationType === '2';
+  private async handleInboundMessage(
+    callback: DingTalkInboundCallback,
+  ): Promise<void> {
+    const isGroup = callback.conversationType === "2";
 
     // 群聊策略检查
     if (isGroup) {
-      const groupPolicy = this.config.groupPolicy || 'open';
-      if (groupPolicy === 'disabled') {
-        console.error('Group chat is disabled, ignoring message');
+      const groupPolicy = this.config.groupPolicy || "open";
+      if (groupPolicy === "disabled") {
+        console.error("Group chat is disabled, ignoring message");
         return;
       }
-      if (groupPolicy === 'allowlist') {
-        const groupAllowFrom = this.config.groupAllowFrom || this.config.allowFrom || [];
+      if (groupPolicy === "allowlist") {
+        const groupAllowFrom =
+          this.config.groupAllowFrom || this.config.allowFrom || [];
         if (!groupAllowFrom.includes(callback.senderId)) {
-          console.error(`Sender ${callback.senderId} not in group allowlist, ignoring`);
+          console.error(
+            `Sender ${callback.senderId} not in group allowlist, ignoring`,
+          );
           return;
         }
       }
     } else {
       // 私聊策略检查
-      const dmPolicy = this.config.dmPolicy || 'open';
-      if (dmPolicy === 'allowlist') {
+      const dmPolicy = this.config.dmPolicy || "open";
+      if (dmPolicy === "allowlist") {
         const allowFrom = this.config.allowFrom || [];
         if (!allowFrom.includes(callback.senderId)) {
-          console.error(`Sender ${callback.senderId} not in allowlist, ignoring`);
+          console.error(
+            `Sender ${callback.senderId} not in allowlist, ignoring`,
+          );
           return;
         }
       }
     }
 
     // 解析消息内容：钉钉文本消息在 text.content 字段里
-    let messageText = '';
+    let messageText = "";
     if (callback.text?.content) {
       messageText = callback.text.content.trim();
-    } else if (callback.msgtype === 'richText' && callback.content) {
+    } else if (callback.msgtype === "richText" && callback.content) {
       try {
         const parsed = JSON.parse(callback.content);
         messageText = parsed.content || parsed.text || JSON.stringify(parsed);
@@ -363,11 +478,13 @@ export class DingTalkClient {
     }
 
     if (!messageText.trim()) {
-      console.error('Empty message content, ignoring');
+      console.error("Empty message content, ignoring");
       return;
     }
 
-    console.error(`Received message from ${callback.senderId} in ${callback.conversationId}: ${messageText}`);
+    console.error(
+      `Received message from ${callback.senderId} in ${callback.conversationId}: ${messageText}`,
+    );
 
     if (this.messageHandler) {
       await this.messageHandler(callback);
@@ -380,14 +497,25 @@ export class DingTalkClient {
   async sendMessage(
     conversationId: string,
     content: string,
-    isGroup: boolean
+    isGroup: boolean,
   ): Promise<DingTalkSendResponse> {
-    const messageType = this.config.messageType || 'markdown';
+    const messageType = this.config.messageType || "markdown";
 
-    if (messageType === 'card' && this.config.cardTemplateId) {
-      // AI 卡片模式
-      const card = await this.createAICard(conversationId, content);
-      return { errcode: 0, errmsg: 'ok', processQueryKeys: [card.processQueryKey] };
+    if (messageType === "card" && this.config.cardTemplateId) {
+      // AI 卡片模式：sendMessage 不在 index.ts 的卡片路径中使用，此处构造最小上下文
+      const card = await this.createAICard(
+        {
+          conversationType: isGroup ? "2" : "1",
+          conversationId,
+          senderStaffId: undefined,
+        },
+        content,
+      );
+      return {
+        errcode: 0,
+        errmsg: "ok",
+        processQueryKeys: [card.processQueryKey],
+      };
     }
 
     // 默认 Markdown 模式
@@ -400,7 +528,7 @@ export class DingTalkClient {
   async sendPrivateMessage(
     userId: string,
     content: string,
-    msgKey: string = 'text'
+    msgKey: string = "text",
   ): Promise<DingTalkSendResponse> {
     const accessToken = await this.getAccessToken();
     const robotCode = this.config.robotCode || this.config.clientId;
@@ -408,10 +536,10 @@ export class DingTalkClient {
     const response = await fetch(
       `${DINGTALK_API_BASE}/v1.0/robot/oToMessages/batchSend`,
       {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'x-acs-dingtalk-access-token': accessToken,
+          "Content-Type": "application/json",
+          "x-acs-dingtalk-access-token": accessToken,
         },
         body: JSON.stringify({
           robotCode,
@@ -419,7 +547,7 @@ export class DingTalkClient {
           msgKey,
           msgParam: JSON.stringify({ content }),
         }),
-      }
+      },
     );
 
     return response.json();
@@ -431,7 +559,7 @@ export class DingTalkClient {
   async sendGroupMessage(
     conversationId: string,
     content: string,
-    msgKey: string = 'text'
+    msgKey: string = "text",
   ): Promise<DingTalkSendResponse> {
     const accessToken = await this.getAccessToken();
     const robotCode = this.config.robotCode || this.config.clientId;
@@ -439,10 +567,10 @@ export class DingTalkClient {
     const response = await fetch(
       `${DINGTALK_API_BASE}/v1.0/robot/groupMessages/send`,
       {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'x-acs-dingtalk-access-token': accessToken,
+          "Content-Type": "application/json",
+          "x-acs-dingtalk-access-token": accessToken,
         },
         body: JSON.stringify({
           robotCode,
@@ -450,7 +578,7 @@ export class DingTalkClient {
           msgKey,
           msgParam: JSON.stringify({ content }),
         }),
-      }
+      },
     );
 
     return response.json();
@@ -462,18 +590,26 @@ export class DingTalkClient {
   async sendMarkdownMessage(
     conversationId: string,
     content: string,
-    isGroup: boolean
+    isGroup: boolean,
   ): Promise<DingTalkSendResponse> {
-    const msgKey = 'sampleMarkdown';
+    const msgKey = "sampleMarkdown";
     const msgParam = {
-      title: 'Claude Code',
+      title: "Claude Code",
       text: content,
     };
 
     if (isGroup) {
-      return this.sendGroupMessage(conversationId, JSON.stringify(msgParam), msgKey);
+      return this.sendGroupMessage(
+        conversationId,
+        JSON.stringify(msgParam),
+        msgKey,
+      );
     } else {
-      return this.sendPrivateMessage(conversationId, JSON.stringify(msgParam), msgKey);
+      return this.sendPrivateMessage(
+        conversationId,
+        JSON.stringify(msgParam),
+        msgKey,
+      );
     }
   }
 
@@ -481,52 +617,182 @@ export class DingTalkClient {
    * 创建并投放 AI 卡片
    */
   async createAICard(
-    conversationId: string,
-    content: string
+    context: CardDeliveryContext,
+    content: string,
+    flowStatus: string = "1",
   ): Promise<AICardInstance> {
     const accessToken = await this.getAccessToken();
     const robotCode = this.config.robotCode || this.config.clientId;
-    const templateId = this.config.cardTemplateId || '';
-    const templateKey = this.config.cardTemplateKey || 'content';
+    const templateId = this.config.cardTemplateId || "";
+    const templateKey = this.config.cardTemplateKey || "content";
+    const isPrivate = context.conversationType === "1";
+    const privateTarget = isPrivate ? resolvePrivateCardTarget(context) : null;
 
+    // 按场景构造 openSpaceId
+    const openSpaceId = privateTarget
+      ? `dtv1.card//IM_ROBOT.${privateTarget.targetUserId}`
+      : `dtv1.card//IM_GROUP.${context.conversationId}`;
+    const cardParamMap = buildCardParamMap(templateKey, content, flowStatus);
+
+    // 私聊路径显式携带 userId/userIdType，避免仅靠 openSpaceId 建卡导致首屏空白。
     const request: AICardCreateRequest = {
       cardTemplateId: templateId,
       outTrackId: `claude-code-${Date.now()}`,
-      openConversationId: conversationId,
+      callbackType: "STREAM",
+      openSpaceId,
       cardData: {
-        cardParam: {},
-        cardDataModel: {
-          [templateKey]: content,
-        },
+        cardParamMap,
       },
-      dynamicSummary: content.substring(0, 100),
     };
 
-    const response = await fetch(
-      `${DINGTALK_API_BASE}/v1.0/card/instances/createAndDeliver`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-acs-dingtalk-access-token': accessToken,
-        },
-        body: JSON.stringify({
-          robotCode,
-          ...request,
-        }),
-      }
-    );
-
-    const data = await response.json();
-
-    if (data.errcode !== 0) {
-      throw new Error(`Failed to create AI card: ${data.errmsg}`);
+    if (privateTarget) {
+      request.userId = privateTarget.targetUserId;
+      request.userIdType = privateTarget.userIdType;
+      request.imRobotOpenSpaceModel = {
+        supportForward: true,
+      };
+      request.imRobotOpenDeliverModel = {
+        spaceType: "IM_ROBOT",
+      };
+    } else {
+      request.imGroupOpenSpaceModel = {
+        supportForward: true,
+      };
+      request.imGroupOpenDeliverModel = {
+        robotCode,
+      };
     }
 
+    const endpoint = `${DINGTALK_API_BASE}/v1.0/card/instances/createAndDeliver`;
+    const requestStartedAt = Date.now();
+    console.error(
+      `[card] createAICard request meta: ${stringifyForLog({
+        endpoint,
+        method: "POST",
+        flowStatus,
+        templateId,
+        templateKey,
+        outTrackId: request.outTrackId,
+        openSpaceId,
+        conversationType: context.conversationType,
+        conversationId: context.conversationId,
+        senderId: context.senderId || "(none)",
+        senderStaffId: context.senderStaffId || "(none)",
+        targetUserId: privateTarget?.targetUserId || "(none)",
+        targetUserIdType: privateTarget?.userIdType || "(none)",
+        contentLength: content.length,
+        contentPreview: content.slice(0, 120),
+      })}`,
+    );
+    console.error(
+      `[card] createAICard request body: ${stringifyForLog({
+        conversationType: context.conversationType,
+        conversationId: context.conversationId,
+        senderId: context.senderId || "(none)",
+        senderStaffId: context.senderStaffId || "(none)",
+        targetUserId: privateTarget?.targetUserId || "(none)",
+        targetUserIdType: privateTarget?.userIdType || "(none)",
+        request,
+      })}`,
+    );
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acs-dingtalk-access-token": accessToken,
+      },
+      body: JSON.stringify(request),
+    });
+
+    const data = (await response.json()) as AICardCreateResponse;
+    const elapsedMs = Date.now() - requestStartedAt;
+
+    console.error(
+      `[card] createAICard response meta: ${stringifyForLog({
+        endpoint,
+        method: "POST",
+        status: response.status,
+        ok: response.ok,
+        statusText: response.statusText,
+        elapsedMs,
+        headers: headersToObject(response.headers),
+      })}`,
+    );
+    console.error(
+      `[card] createAICard response body: ${stringifyForLog({
+        flowStatus,
+        body: data,
+      })}`,
+    );
+
+    const businessError = getDingTalkBusinessError(data);
+    const deliverResults = data.result?.deliverResults || [];
+    const deliverFailure = getCardDeliverFailure(deliverResults);
+    console.error(
+      `[card] createAICard parsed response: ${stringifyForLog({
+        businessError,
+        deliverFailure,
+        deliverResults,
+        resultOutTrackId: data.result?.outTrackId || "(none)",
+        resultCardInstanceId: data.result?.cardInstanceId || data.cardInstanceId || "(none)",
+        resultProcessQueryKey:
+          data.result?.processQueryKey || data.processQueryKey || "(none)",
+      })}`,
+    );
+    if (!response.ok || businessError) {
+      throw new Error(
+        `Failed to create AI card: HTTP ${response.status}, ` +
+          `errmsg=${businessError || response.statusText || "unknown"}`,
+      );
+    }
+    if (deliverFailure) {
+      throw new Error(
+        `Failed to create AI card: delivery failed: ${deliverFailure}`,
+      );
+    }
+
+    const successfulDelivery = deliverResults.find((result) => result.success);
+    const outTrackId = data.result?.outTrackId || request.outTrackId;
+    const cardInstanceId =
+      successfulDelivery?.cardInstanceId ||
+      data.result?.cardInstanceId ||
+      data.cardInstanceId;
+    const carrierId = successfulDelivery?.carrierId;
+    const processQueryKey =
+      successfulDelivery?.processQueryKey ||
+      data.result?.processQueryKey ||
+      data.processQueryKey ||
+      "";
+
+    if (!outTrackId) {
+      throw new Error(
+        "Failed to create AI card: missing outTrackId in successful create response",
+      );
+    }
+
+    console.error(
+      `[card] createAICard final instance: ${stringifyForLog({
+        outTrackId,
+        cardInstanceId: cardInstanceId || "(none)",
+        carrierId: carrierId || "(none)",
+        processQueryKey: processQueryKey || "(none)",
+        openSpaceId,
+        targetUserId: privateTarget?.targetUserId || "(none)",
+        targetUserIdType: privateTarget?.userIdType || "(none)",
+      })}`,
+    );
+
     return {
-      cardInstanceId: data.cardInstanceId,
-      conversationId,
-      processQueryKey: data.processQueryKey,
+      outTrackId,
+      cardInstanceId,
+      carrierId,
+      conversationId: context.conversationId,
+      conversationType: context.conversationType,
+      openSpaceId,
+      targetUserId: privateTarget?.targetUserId,
+      targetUserIdType: privateTarget?.userIdType,
+      processQueryKey,
       templateId,
     };
   }
@@ -537,41 +803,97 @@ export class DingTalkClient {
   async streamAICard(
     card: AICardInstance,
     content: string,
-    isFinalize: boolean = false
+    isFinalize: boolean = false,
+    flowStatusOverride?: string,
   ): Promise<void> {
     const accessToken = await this.getAccessToken();
-    const templateKey = this.config.cardTemplateKey || 'content';
+    const templateKey = this.config.cardTemplateKey || "content";
+    const flowStatus = flowStatusOverride || (isFinalize ? "3" : "2");
 
     const request: AICardStreamingRequest = {
-      cardInstanceId: card.cardInstanceId,
-      outTrackId: `claude-code-${Date.now()}`,
-      cardData: {
-        cardParam: {},
-        cardDataModel: {
-          [templateKey]: content,
-        },
+      outTrackId: card.outTrackId,
+      userIdType: card.targetUserIdType,
+      cardUpdateOptions: {
+        updateCardDataByKey: true,
       },
-      isFinalize,
-      dynamicSummary: content.substring(0, 100),
+      cardData: {
+        cardParamMap: buildCardParamMap(templateKey, content, flowStatus),
+      },
     };
 
-    const response = await fetch(
-      `${DINGTALK_API_BASE}/v1.0/card/streaming`,
-      {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-acs-dingtalk-access-token': accessToken,
-        },
-        body: JSON.stringify(request),
-      }
+    const endpoint = `${DINGTALK_API_BASE}/v1.0/card/instances`;
+    const requestStartedAt = Date.now();
+    console.error(
+      `[card] streamAICard request meta: ${stringifyForLog({
+        endpoint,
+        method: "PUT",
+        isFinalize,
+        flowStatus,
+        outTrackId: card.outTrackId,
+        cardInstanceId: card.cardInstanceId || "(none)",
+        targetUserId: card.targetUserId || "(none)",
+        targetUserIdType: card.targetUserIdType || "(none)",
+        contentLength: content.length,
+        contentPreview: content.slice(0, 120),
+      })}`,
+    );
+    console.error(
+      `[card] streamAICard request body: ${stringifyForLog({
+        isFinalize,
+        flowStatus,
+        request,
+      })}`,
     );
 
-    const data = await response.json();
+    const response = await fetch(endpoint, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acs-dingtalk-access-token": accessToken,
+      },
+      body: JSON.stringify(request),
+    });
 
-    if (data.errcode !== 0) {
-      throw new Error(`Failed to stream AI card: ${data.errmsg}`);
+    const data = (await response.json()) as AICardStreamingResponse;
+    const elapsedMs = Date.now() - requestStartedAt;
+    console.error(
+      `[card] streamAICard response meta: ${stringifyForLog({
+        endpoint,
+        method: "PUT",
+        status: response.status,
+        ok: response.ok,
+        statusText: response.statusText,
+        elapsedMs,
+        headers: headersToObject(response.headers),
+      })}`,
+    );
+    console.error(
+      `[card] streamAICard response body: ${stringifyForLog({
+        isFinalize,
+        flowStatus,
+        body: data,
+      })}`,
+    );
+
+    const businessError = getDingTalkBusinessError(data);
+    console.error(
+      `[card] streamAICard parsed response: ${stringifyForLog({
+        businessError,
+        result: data.result,
+        outTrackId: card.outTrackId,
+      })}`,
+    );
+    if (!response.ok || businessError) {
+      throw new Error(
+        `Failed to stream AI card: HTTP ${response.status}, ` +
+          `errmsg=${businessError || response.statusText || "unknown"}`,
+      );
     }
+
+    const updateType = isFinalize ? "final" : "intermediate";
+    console.error(
+      `[card] stream update success: type=${updateType}, flowStatus=${flowStatus}, outTrackId=${card.outTrackId}, cardInstanceId=${card.cardInstanceId || "(none)"}, len=${content.length}`,
+    );
   }
 
   /**
@@ -585,9 +907,9 @@ export class DingTalkClient {
       `${DINGTALK_API_BASE}/v1.0/robot/media/download?downloadCode=${downloadCode}&robotCode=${robotCode}`,
       {
         headers: {
-          'x-acs-dingtalk-access-token': accessToken,
+          "x-acs-dingtalk-access-token": accessToken,
         },
-      }
+      },
     );
 
     if (!response.ok) {
@@ -604,27 +926,27 @@ export class DingTalkClient {
   async sendMediaMessage(
     conversationId: string,
     mediaBuffer: Buffer,
-    mediaType: 'image' | 'voice' | 'video' | 'file',
+    mediaType: "image" | "voice" | "video" | "file",
     fileName: string,
-    isGroup: boolean
+    isGroup: boolean,
   ): Promise<DingTalkSendResponse> {
     const accessToken = await this.getAccessToken();
     const robotCode = this.config.robotCode || this.config.clientId;
 
     // 1. 上传媒体文件
     const formData = new FormData();
-    formData.append('media', new Blob([new Uint8Array(mediaBuffer)]), fileName);
-    formData.append('type', mediaType);
+    formData.append("media", new Blob([new Uint8Array(mediaBuffer)]), fileName);
+    formData.append("type", mediaType);
 
     const uploadResponse = await fetch(
       `${DINGTALK_API_BASE}/v1.0/robot/media/upload?robotCode=${robotCode}`,
       {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'x-acs-dingtalk-access-token': accessToken,
+          "x-acs-dingtalk-access-token": accessToken,
         },
         body: formData,
-      }
+      },
     );
 
     const uploadData = await uploadResponse.json();
@@ -637,10 +959,10 @@ export class DingTalkClient {
 
     // 2. 发送媒体消息
     const msgKeyMap = {
-      image: 'sampleImageMsg',
-      voice: 'sampleAudio',
-      video: 'sampleVideo',
-      file: 'sampleFile',
+      image: "sampleImageMsg",
+      voice: "sampleAudio",
+      video: "sampleVideo",
+      file: "sampleFile",
     };
 
     const msgParam = {
@@ -651,13 +973,13 @@ export class DingTalkClient {
       return this.sendGroupMessage(
         conversationId,
         JSON.stringify(msgParam),
-        msgKeyMap[mediaType]
+        msgKeyMap[mediaType],
       );
     } else {
       return this.sendPrivateMessage(
         conversationId,
         JSON.stringify(msgParam),
-        msgKeyMap[mediaType]
+        msgKeyMap[mediaType],
       );
     }
   }

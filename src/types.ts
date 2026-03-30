@@ -15,15 +15,15 @@ export interface DingTalkChannelConfig {
   /** 应用 ID */
   agentId?: string;
   /** 私聊策略: open | pairing | allowlist */
-  dmPolicy?: 'open' | 'pairing' | 'allowlist';
+  dmPolicy?: "open" | "pairing" | "allowlist";
   /** 群聊策略: open | allowlist | disabled */
-  groupPolicy?: 'open' | 'allowlist' | 'disabled';
+  groupPolicy?: "open" | "allowlist" | "disabled";
   /** 允许的发送者 ID 列表 */
   allowFrom?: string[];
   /** 群聊发送者白名单 */
   groupAllowFrom?: string[];
   /** 消息类型: markdown | card */
-  messageType?: 'markdown' | 'card';
+  messageType?: "markdown" | "card";
   /** AI 卡片模板 ID */
   cardTemplateId?: string;
   /** 卡片内容字段键 */
@@ -93,7 +93,7 @@ export interface DingTalkInboundCallback {
   /** 消息 ID */
   msgId: string;
   /** 会话类型: 1=单聊, 2=群聊 */
-  conversationType: '1' | '2';
+  conversationType: "1" | "2";
   /** 文本消息内容 */
   text?: {
     content: string;
@@ -141,51 +141,112 @@ export interface DingTalkSendResponse {
 
 // AI 卡片实例
 export interface AICardInstance {
-  cardInstanceId: string;
+  outTrackId: string;
+  cardInstanceId?: string;
+  carrierId?: string;
   conversationId: string;
+  conversationType: "1" | "2";
+  openSpaceId: string;
+  targetUserId?: string;
+  targetUserIdType?: number;
   processQueryKey: string;
   templateId: string;
 }
 
-// AI 卡片创建请求
+// AI 卡片投放上下文
+export interface CardDeliveryContext {
+  /** 会话类型: 1=单聊, 2=群聊 */
+  conversationType: "1" | "2";
+  /** 会话 ID */
+  conversationId: string;
+  /** 发送者 ID（某些参考实现直接用此字段作为目标 userId） */
+  senderId?: string;
+  /** 发送者员工 ID（私聊优先作为 userId / openSpaceId 目标） */
+  senderStaffId?: string;
+}
+
+// AI 卡片创建请求（字段与钉钉 createAndDeliver 接口保持一致）
 export interface AICardCreateRequest {
   cardTemplateId: string;
   outTrackId: string;
-  openConversationId: string;
-  callbackRoute?: string;
+  callbackType?: "STREAM" | "HTTP";
+  userId?: string;
+  userIdType?: number;
+  /** 场域标识，格式: dtv1.card//IM_ROBOT.<userId> 或 dtv1.card//IM_GROUP.<conversationId> */
+  openSpaceId: string;
+  imRobotOpenSpaceModel?: {
+    supportForward?: boolean;
+  };
+  imRobotOpenDeliverModel?: {
+    spaceType: "IM_ROBOT";
+  };
+  imGroupOpenSpaceModel?: {
+    supportForward?: boolean;
+  };
+  imGroupOpenDeliverModel?: {
+    robotCode: string;
+    atUserIds?: Record<string, string>;
+    recipients?: string[];
+  };
   cardData: {
-    cardParam: {
+    cardParamMap: {
       [key: string]: string;
     };
-    cardDataModel: {
-      [key: string]: unknown;
-    };
   };
-  previewCategory?: string;
-  dynamicSummary?: string;
 }
 
-// AI 卡片流式更新请求
+export interface AICardDeliverResult {
+  spaceId?: string;
+  spaceType?: string;
+  success?: boolean;
+  errorCode?: string | number;
+  errorMsg?: string;
+  carrierId?: string;
+  cardInstanceId?: string;
+  processQueryKey?: string;
+}
+
+export interface AICardCreateResponse {
+  success?: boolean;
+  errcode?: number;
+  errmsg?: string;
+  message?: string;
+  cardInstanceId?: string;
+  processQueryKey?: string;
+  result?: {
+    outTrackId?: string;
+    cardInstanceId?: string;
+    processQueryKey?: string;
+    deliverResults?: AICardDeliverResult[];
+  };
+}
+
+// AI 卡片更新请求
 export interface AICardStreamingRequest {
-  cardInstanceId: string;
   outTrackId: string;
+  userIdType?: number;
+  cardUpdateOptions?: {
+    updateCardDataByKey?: boolean;
+  };
   cardData: {
-    cardParam: {
+    cardParamMap: {
       [key: string]: string;
     };
-    cardDataModel: {
-      [key: string]: unknown;
-    };
   };
-  isFinalize?: boolean;
-  previewCategory?: string;
-  dynamicSummary?: string;
+}
+
+export interface AICardStreamingResponse {
+  success?: boolean;
+  errcode?: number;
+  errmsg?: string;
+  message?: string;
+  result?: boolean | { outTrackId?: string; cardInstanceId?: string };
 }
 
 // 解析后的消息内容
 export interface ParsedMessageContent {
   /** 消息类型 */
-  type: 'text' | 'image' | 'voice' | 'video' | 'file' | 'richText';
+  type: "text" | "image" | "voice" | "video" | "file" | "richText";
   /** 文本内容 */
   text?: string;
   /** 媒体下载码 */
@@ -209,7 +270,7 @@ export interface ChannelMessageMeta {
   /** 发送者 ID */
   senderId: string;
   /** 会话类型 */
-  conversationType: '1' | '2';
+  conversationType: "1" | "2";
   /** 消息 ID */
   msgId: string;
   /** 是否群聊 */
@@ -241,14 +302,92 @@ export interface ChannelState {
 
 // ClaudeTalk Profile 配置
 export interface ProfileConfig {
-  DINGTALK_CLIENT_ID?: string
-  DINGTALK_CLIENT_SECRET?: string
-  systemPrompt?: string
+  DINGTALK_CLIENT_ID?: string;
+  DINGTALK_CLIENT_SECRET?: string;
+  systemPrompt?: string;
   // SubAgent 相关配置
-  subagentEnabled?: boolean
-  subagentModel?: string
+  subagentEnabled?: boolean;
+  subagentModel?: string;
   subagentPermissions?: {
-    allow?: string[]
-    deny?: string[]
-  }
+    allow?: string[];
+    deny?: string[];
+  };
+  // 卡片流式输出配置
+  messageType?: "markdown" | "card";
+  cardTemplateId?: string;
+  cardTemplateKey?: string;
+}
+
+// Claude CLI stream-json 输出事件类型
+export type StreamEventType =
+  | "system" // 系统事件：init, hook, retry 等
+  | "stream_event" // 顶层包装事件，内含真实事件
+  | "assistant" // assistant 消息开始
+  | "content_block_start" // 内容块开始
+  | "content_block_delta" // 内容块增量（正文文本主要来源）
+  | "content_block_stop" // 内容块结束
+  | "message_start" // 消息开始
+  | "message_delta" // 消息级增量（stop_reason 等）
+  | "message_stop" // 消息结束
+  | "result" // 最终结果事件
+  | "tool_use" // 工具调用
+  | "tool_result" // 工具结果
+  | string; // 兼容未知事件类型
+
+// content_block_delta 中的 delta 结构
+export interface ContentBlockDelta {
+  type?: string; // "text_delta" | "thinking_delta" | "input_json_delta" | etc.
+  text?: string; // text_delta 时的文本增量
+  thinking?: string; // thinking_delta 时的思考内容
+  partial_json?: string;
+}
+
+export interface AssistantMessageContentBlock {
+  type?: string;
+  text?: string;
+}
+
+// Claude CLI stream-json 输出事件
+export interface StreamChunk {
+  type: StreamEventType;
+  subtype?: string;
+  // 文本内容：部分事件直接携带 text 字段
+  text?: string;
+  // 增量内容：content_block_delta 事件的主要载体
+  delta?: string | ContentBlockDelta;
+  // 内容块信息
+  index?: number;
+  content_block?: {
+    type?: string;
+    text?: string;
+    id?: string;
+    name?: string;
+  };
+  // stream_event 包装：内层真实事件
+  event?: StreamChunk;
+  // 会话信息
+  session_id?: string;
+  // 结果事件字段
+  is_error?: boolean;
+  result?: string;
+  duration_ms?: number;
+  duration_api?: number;
+  stop_reason?: string;
+  // 消息级字段
+  message?: {
+    id?: string;
+    type?: string;
+    role?: string;
+    content?: AssistantMessageContentBlock[] | string;
+    model?: string;
+    stop_reason?: string;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+  cost_usd?: number;
+}
+
+// callClaude 流式回调选项
+export interface CallClaudeOptions {
+  /** 流式文本回调，text 为累积文本，isFinal 为是否结束 */
+  onChunk?: (text: string, isFinal: boolean) => void;
 }
