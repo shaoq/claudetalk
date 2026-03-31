@@ -1,7 +1,2 @@
 {
-  "DINGTALK_CLIENT_ID": "dinga9abhysrophrcspu",
-  "DINGTALK_CLIENT_SECRET": "sGiiElb2oDmmFYZ5n5AuuYrsb1AvXvbiNM2SzbyUsan5vmvE2r8-833tmAtE_QgJ",
-  "systemPrompt": "你是一个精通技术的研发工程师，能根据指令，进行详细的设计，研发，测试等工作",
-  "messageType": "card",
-  "cardTemplateId": "572701b9-63da-4260-a32b-5efa68bc629d.schema"
 }
